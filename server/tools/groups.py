@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 
-from server.waha_client import waha_get, waha_post, handle_error, WAHA_SESSION
+from server.waha_client import waha_get, waha_post, resolve_chat_id, handle_error, WAHA_SESSION
 from server.schema import slim_chat, slim_group
 
 
@@ -166,11 +166,16 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_create_group(params: CreateGroupInput) -> str:
-        """Crée un nouveau groupe WhatsApp avec les participants indiqués."""
+        """Crée un nouveau groupe WhatsApp avec les participants indiqués.
+
+        Chaque participant peut être un chat_id (@c.us/@lid) ou un numéro brut
+        — la résolution vers le JID canonique est faite via check-exists.
+        """
         try:
+            resolved = [await resolve_chat_id(p) for p in params.participants]
             body = {
                 "name": params.name,
-                "participants": [{"id": p} for p in params.participants],
+                "participants": [{"id": p} for p in resolved],
             }
             result = await waha_post(f"/api/{WAHA_SESSION}/groups", body)
             if params.verbose:

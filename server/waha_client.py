@@ -49,6 +49,38 @@ async def waha_delete(path: str) -> Any:
         return {"ok": True}
 
 
+async def resolve_chat_id(value: str) -> str:
+    """Normalize a user-facing recipient to a WAHA chat_id.
+
+    Accepts:
+      - 33612345678  → asks WAHA which JID is registered (returns @c.us or @lid)
+      - +33612345678 → '+' stripped, same path as above
+      - 33612345678@c.us / @lid / @g.us → returned unchanged
+    Raises ValueError if the value is empty or contains no digits.
+    """
+    if value is None or value == "":
+        raise ValueError("chat_id vide.")
+    if "@" in value:
+        return value
+    digits = "".join(c for c in value if c.isdigit())
+    if not digits:
+        raise ValueError(f"Format chat_id invalide: '{value}'.")
+    try:
+        result = await waha_get(
+            "/api/contacts/check-exists",
+            params={"phone": digits, "session": WAHA_SESSION},
+        )
+        if isinstance(result, dict):
+            cid = result.get("chatId") or result.get("id")
+            if isinstance(cid, dict):
+                cid = cid.get("_serialized") or cid.get("user")
+            if cid:
+                return cid
+    except Exception:
+        pass
+    return f"{digits}@c.us"
+
+
 def resolve_media_url(url: Optional[str]) -> Optional[str]:
     """WAHA media URLs come back as http://localhost:3000/api/files/... — that
     only works from inside the WAHA container. Rewrite the host to WAHA_BASE_URL

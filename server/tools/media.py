@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
-from server.waha_client import waha_post, handle_error, WAHA_SESSION
+from server.waha_client import waha_post, resolve_chat_id, handle_error, WAHA_SESSION
 from server.schema import slim_send_result
 
 
@@ -18,7 +18,7 @@ def register(mcp_instance: FastMCP):
 
     class SendImageInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-        chat_id: str = Field(..., description="ID du destinataire (contact ou groupe)")
+        chat_id: str = Field(..., description="Destinataire: chat_id (@c.us/@lid/@g.us) ou numéro brut '33612345678' (résolu automatiquement).")
         url: str = Field(
             ...,
             description="URL publique de l'image (https://...). WAHA la télécharge et l'envoie.",
@@ -42,21 +42,22 @@ def register(mcp_instance: FastMCP):
         Retourne `{success, message_id, chat_id, ...}` par défaut.
         """
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             body = {
                 "session": WAHA_SESSION,
-                "chatId": params.chat_id,
+                "chatId": chat_id,
                 "file": {"url": params.url},
             }
             if params.caption:
                 body["caption"] = params.caption
             result = await waha_post("/api/sendImage", body)
-            return _wrap(result, params.chat_id, bool(params.verbose))
+            return _wrap(result, chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)
 
     class SendFileInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-        chat_id: str = Field(..., description="ID du destinataire (contact ou groupe)")
+        chat_id: str = Field(..., description="Destinataire: chat_id (@c.us/@lid/@g.us) ou numéro brut '33612345678' (résolu automatiquement).")
         url: str = Field(..., description="URL publique du fichier à envoyer")
         filename: Optional[str] = Field(
             default=None,
@@ -78,18 +79,19 @@ def register(mcp_instance: FastMCP):
     async def whatsapp_send_file(params: SendFileInput) -> str:
         """Envoie un fichier (PDF, ZIP, etc.) depuis une URL publique."""
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             file_obj = {"url": params.url}
             if params.filename:
                 file_obj["filename"] = params.filename
             body = {
                 "session": WAHA_SESSION,
-                "chatId": params.chat_id,
+                "chatId": chat_id,
                 "file": file_obj,
             }
             if params.caption:
                 body["caption"] = params.caption
             result = await waha_post("/api/sendFile", body)
-            return _wrap(result, params.chat_id, bool(params.verbose))
+            return _wrap(result, chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)
 
@@ -112,12 +114,13 @@ def register(mcp_instance: FastMCP):
     async def whatsapp_send_voice(params: SendVoiceInput) -> str:
         """Envoie un message vocal depuis une URL audio publique."""
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             body = {
                 "session": WAHA_SESSION,
-                "chatId": params.chat_id,
+                "chatId": chat_id,
                 "file": {"url": params.url},
             }
             result = await waha_post("/api/sendVoice", body)
-            return _wrap(result, params.chat_id, bool(params.verbose))
+            return _wrap(result, chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)

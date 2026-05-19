@@ -6,7 +6,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import (
-    waha_get, waha_post, waha_fetch_bytes, resolve_media_url,
+    waha_get, waha_post, waha_fetch_bytes, resolve_media_url, resolve_chat_id,
     handle_error, WAHA_SESSION,
 )
 from server.schema import slim_message, slim_send_result
@@ -18,7 +18,7 @@ def register(mcp_instance: FastMCP):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         chat_id: str = Field(
             ...,
-            description="ID du chat. Contacts récents: '<digits>@lid' (Linked Identity). Legacy: '<digits>@c.us'. Groupes: '<digits>@g.us'.",
+            description="Chat: '<digits>@lid' (récent), '<digits>@c.us' (legacy), '<digits>@g.us' (groupe), ou un numéro brut comme '33612345678' (résolu en JID via check-exists).",
         )
         limit: Optional[int] = Field(
             default=20,
@@ -57,8 +57,9 @@ def register(mcp_instance: FastMCP):
         plus ancien au plus récent.
         """
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             result = await waha_get(
-                f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages",
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages",
                 params={
                     "limit": params.limit,
                     "downloadMedia": str(bool(params.download_media)).lower(),
@@ -80,7 +81,7 @@ def register(mcp_instance: FastMCP):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         chat_id: str = Field(
             ...,
-            description="ID du destinataire. Contact: '<digits>@lid' ou '<digits>@c.us'. Groupe: '<digits>@g.us'.",
+            description="Destinataire: '<digits>@lid', '<digits>@c.us', '<digits>@g.us', ou un numéro brut comme '33612345678' (résolu automatiquement).",
         )
         text: str = Field(
             ...,
@@ -114,9 +115,10 @@ def register(mcp_instance: FastMCP):
         Passe `verbose=true` pour récupérer le payload WAHA complet.
         """
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             body = {
                 "session": WAHA_SESSION,
-                "chatId": params.chat_id,
+                "chatId": chat_id,
                 "text": params.text,
             }
             if params.reply_to:
@@ -124,7 +126,7 @@ def register(mcp_instance: FastMCP):
             result = await waha_post("/api/sendText", body)
             if params.verbose:
                 return json.dumps(result, ensure_ascii=False, indent=2)
-            return json.dumps(slim_send_result(result, chat_id_hint=params.chat_id),
+            return json.dumps(slim_send_result(result, chat_id_hint=chat_id),
                               ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
@@ -154,11 +156,12 @@ def register(mcp_instance: FastMCP):
         par `{success: true, chat_id, message_id?}`.
         """
         try:
-            body = {"session": WAHA_SESSION, "chatId": params.chat_id}
+            chat_id = await resolve_chat_id(params.chat_id)
+            body = {"session": WAHA_SESSION, "chatId": chat_id}
             if params.message_id:
                 body["messageId"] = params.message_id
             await waha_post("/api/sendSeen", body)
-            out = {"success": True, "chat_id": params.chat_id}
+            out = {"success": True, "chat_id": chat_id}
             if params.message_id:
                 out["message_id"] = params.message_id
             return json.dumps(out, ensure_ascii=False, indent=2)
@@ -187,9 +190,10 @@ def register(mcp_instance: FastMCP):
     async def whatsapp_get_message(params: GetMessageInput) -> str:
         """Récupère un message unique sans relire tout l'historique du chat."""
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             qp = {"downloadMedia": str(bool(params.download_media)).lower()}
             result = await waha_get(
-                f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages/{params.message_id}",
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages/{params.message_id}",
                 params=qp,
             )
             return json.dumps(slim_message(result, include_media=bool(params.download_media)),
@@ -230,8 +234,9 @@ def register(mcp_instance: FastMCP):
         en base64 — pratique pour qu'un agent traite l'image directement.
         """
         try:
+            chat_id = await resolve_chat_id(params.chat_id)
             msg = await waha_get(
-                f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages/{params.message_id}",
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages/{params.message_id}",
                 params={"downloadMedia": "true"},
             )
             if not isinstance(msg, dict):
@@ -250,7 +255,7 @@ def register(mcp_instance: FastMCP):
             out = {
                 "success": True,
                 "message_id": params.message_id,
-                "chat_id": params.chat_id,
+                "chat_id": chat_id,
                 "mimetype": media.get("mimetype"),
                 "filename": media.get("filename"),
                 "size": media.get("filesize") or media.get("size"),
@@ -305,7 +310,7 @@ def register(mcp_instance: FastMCP):
         """
         try:
             if params.chat_id:
-                chats_to_search = [params.chat_id]
+                chats_to_search = [await resolve_chat_id(params.chat_id)]
             else:
                 chats = await waha_get(f"/api/{WAHA_SESSION}/chats", params={"limit": 10})
                 chats_to_search = []
