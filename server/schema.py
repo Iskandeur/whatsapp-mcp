@@ -57,8 +57,9 @@ def slim_message(m: dict, include_media: bool = True) -> dict:
     if include_media:
         media = m.get("media")
         if isinstance(media, dict):
+            from server.waha_client import resolve_media_url
             out["media"] = {
-                "url": media.get("url"),
+                "url": resolve_media_url(media.get("url")),
                 "mimetype": media.get("mimetype"),
                 "filename": media.get("filename"),
                 "size": media.get("filesize") or media.get("size"),

@@ -1,10 +1,14 @@
 """MCP tools for reading and sending WhatsApp messages."""
+import base64
 import json
 from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
-from server.waha_client import waha_get, waha_post, handle_error, WAHA_SESSION
+from server.waha_client import (
+    waha_get, waha_post, waha_fetch_bytes, resolve_media_url,
+    handle_error, WAHA_SESSION,
+)
 from server.schema import slim_message, slim_send_result
 
 
@@ -157,6 +161,113 @@ def register(mcp_instance: FastMCP):
             out = {"success": True, "chat_id": params.chat_id}
             if params.message_id:
                 out["message_id"] = params.message_id
+            return json.dumps(out, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return handle_error(e)
+
+    class GetMessageInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="ID du chat contenant le message.")
+        message_id: str = Field(..., description="ID complet du message (ex: 'true_<chat>_<hex>').")
+        download_media: Optional[bool] = Field(
+            default=False,
+            description="Inclure le bloc media (url, mimetype, filename, size) si hasMedia=true.",
+        )
+
+    @mcp_instance.tool(
+        name="whatsapp_get_message",
+        annotations={
+            "title": "Récupérer un message WhatsApp par ID",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_get_message(params: GetMessageInput) -> str:
+        """Récupère un message unique sans relire tout l'historique du chat."""
+        try:
+            qp = {"downloadMedia": str(bool(params.download_media)).lower()}
+            result = await waha_get(
+                f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages/{params.message_id}",
+                params=qp,
+            )
+            return json.dumps(slim_message(result, include_media=bool(params.download_media)),
+                              ensure_ascii=False, indent=2)
+        except Exception as e:
+            return handle_error(e)
+
+    class DownloadMediaInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="ID du chat contenant le message.")
+        message_id: str = Field(..., description="ID complet du message à télécharger.")
+        include_base64: Optional[bool] = Field(
+            default=True,
+            description="Si True, télécharge le binaire et l'inclut en base64 (utile pour les agents distants).",
+        )
+        max_bytes: Optional[int] = Field(
+            default=5_000_000,
+            description="Taille max (octets) si include_base64=true. Au-delà, le téléchargement échoue et seul l'URL est renvoyé.",
+            ge=1024,
+            le=50_000_000,
+        )
+
+    @mcp_instance.tool(
+        name="whatsapp_download_media",
+        annotations={
+            "title": "Télécharger le média d'un message WhatsApp",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_download_media(params: DownloadMediaInput) -> str:
+        """Récupère le média (image, audio, vidéo, document) d'un message donné.
+
+        Retourne `{success, message_id, mimetype, filename, size, url, base64?}`.
+        Si include_base64=true et la taille ≤ max_bytes, le binaire est inclus
+        en base64 — pratique pour qu'un agent traite l'image directement.
+        """
+        try:
+            msg = await waha_get(
+                f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages/{params.message_id}",
+                params={"downloadMedia": "true"},
+            )
+            if not isinstance(msg, dict):
+                return json.dumps({"success": False, "error": "Message introuvable."},
+                                  ensure_ascii=False, indent=2)
+            media = msg.get("media") or {}
+            if not msg.get("hasMedia") or not isinstance(media, dict) or not media.get("url"):
+                return json.dumps({
+                    "success": False,
+                    "error": "Ce message ne contient pas de média téléchargeable.",
+                    "message_id": params.message_id,
+                    "type": (msg.get("_data") or {}).get("type") or msg.get("type"),
+                }, ensure_ascii=False, indent=2)
+
+            url = resolve_media_url(media.get("url"))
+            out = {
+                "success": True,
+                "message_id": params.message_id,
+                "chat_id": params.chat_id,
+                "mimetype": media.get("mimetype"),
+                "filename": media.get("filename"),
+                "size": media.get("filesize") or media.get("size"),
+                "url": url,
+            }
+
+            if params.include_base64:
+                try:
+                    raw, ctype = await waha_fetch_bytes(url, max_bytes=params.max_bytes)
+                    out["size"] = out["size"] or len(raw)
+                    out["mimetype"] = out["mimetype"] or ctype
+                    out["base64"] = base64.b64encode(raw).decode("ascii")
+                except ValueError as ve:
+                    out["base64_skipped"] = str(ve)
+                except Exception as fe:
+                    out["base64_skipped"] = f"download failed: {type(fe).__name__}"
+
             return json.dumps(out, ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)

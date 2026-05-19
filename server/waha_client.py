@@ -49,6 +49,38 @@ async def waha_delete(path: str) -> Any:
         return {"ok": True}
 
 
+def resolve_media_url(url: Optional[str]) -> Optional[str]:
+    """WAHA media URLs come back as http://localhost:3000/api/files/... — that
+    only works from inside the WAHA container. Rewrite the host to WAHA_BASE_URL
+    so the MCP server can actually fetch the file."""
+    if not url:
+        return url
+    from urllib.parse import urlparse, urlunparse
+    parsed = urlparse(url)
+    if parsed.netloc in ("localhost:3000", "127.0.0.1:3000", "0.0.0.0:3000"):
+        base = urlparse(WAHA_BASE)
+        return urlunparse((base.scheme, base.netloc, parsed.path, parsed.params,
+                          parsed.query, parsed.fragment))
+    return url
+
+
+async def waha_fetch_bytes(url: str, max_bytes: Optional[int] = None) -> tuple[bytes, str]:
+    """Download a media file and return (bytes, content_type)."""
+    real = resolve_media_url(url) or url
+    async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+        async with client.stream("GET", real, headers=_headers()) as r:
+            r.raise_for_status()
+            ctype = r.headers.get("content-type", "application/octet-stream")
+            chunks = []
+            total = 0
+            async for chunk in r.aiter_bytes():
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise ValueError(f"Media file exceeds max_bytes={max_bytes} (got >{total}B).")
+                chunks.append(chunk)
+            return b"".join(chunks), ctype
+
+
 def handle_error(e: Exception) -> str:
     if isinstance(e, httpx.HTTPStatusError):
         code = e.response.status_code
