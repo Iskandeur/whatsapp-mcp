@@ -54,8 +54,15 @@ def register(mcp_instance: FastMCP):
         """Récupère les derniers messages d'une conversation WhatsApp (slim).
 
         Retourne `{count, messages: [{id, timestamp, from, to, fromMe, pushName,
-        type, body, ack, hasMedia, media?, hasQuoted, quotedBody}]}`. Triés du
-        plus ancien au plus récent.
+        type, body, ack, hasMedia, media?, hasQuoted, quotedBody, hasReaction,
+        isForwarded, forwardsCount, starred}]}`. Triés du plus ancien au plus récent.
+
+        ⚠️ WAHA Core / engine WEBJS : seul l'historique déjà chargé dans le
+        client WhatsApp Web sous-jacent est accessible. Sur les chats peu actifs
+        ou récemment ouverts depuis le pairing, tu peux ne recevoir que 1-2
+        messages même avec limit=200. Si tu vois `count` très bas, ce n'est pas
+        un bug du MCP — c'est le moteur WAHA qui n'a pas backfillé. Voir
+        whatsapp_get_session_status pour diagnostiquer.
         """
         try:
             chat_id = await resolve_chat_id(params.chat_id)
@@ -420,6 +427,10 @@ def register(mcp_instance: FastMCP):
         Retourne `{total_scanned, counts: {chat: N, image: N, video: N, audio: N,
         ptt: N, document: N, sticker: N, location: N, vcard: N, poll_creation: N,
         ...}, media_total}`. Le total média exclut les messages texte (`chat`).
+
+        ⚠️ Limité par l'historique accessible côté WAHA WEBJS (voir
+        whatsapp_get_messages). Si `total_scanned` est très bas par rapport à
+        scan_limit, c'est que WAHA n'a pas plus de données pour ce chat.
         """
         try:
             chat_id = await resolve_chat_id(params.chat_id)
@@ -473,6 +484,8 @@ def register(mcp_instance: FastMCP):
 
         Retourne aussi `forwardsCount` quand WAHA le fournit (≥ 5 = 'frequently
         forwarded' dans l'UI WhatsApp).
+
+        ⚠️ Limité par l'historique disponible (voir whatsapp_get_messages).
         """
         try:
             chat_id = await resolve_chat_id(params.chat_id)
@@ -528,6 +541,9 @@ def register(mcp_instance: FastMCP):
 
         WAHA Core n'a pas d'endpoint de recherche serveur, donc on récupère les
         `scan_per_chat` messages les plus récents par chat et on filtre localement.
+
+        ⚠️ Limité au sous-historique accessible côté WAHA WEBJS (voir
+        whatsapp_get_messages pour le détail de la limitation).
         """
         try:
             if params.chat_id:

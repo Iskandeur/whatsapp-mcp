@@ -170,6 +170,16 @@ Visit `https://your.domain.tld/<MCP_API_KEY>/qr` on a second screen and scan
 from your phone. The session volume is persistent, so once paired the QR
 endpoint goes quiet again.
 
+**`get_messages` returns only 1-2 messages even with `limit=200`**
+Not a MCP bug — it's the WAHA WEBJS engine's lazy-load model. WhatsApp Web
+only fills its IndexedDB when a chat is opened in the browser; the WAHA API
+returns whatever is already cached, with no way to force a historical sync.
+Right after pairing or a container restart most chats look empty; they
+backfill as new messages arrive. If you need real history, the cleanest
+fix is to switch the WAHA container to the `NOWEB` engine
+(`WHATSAPP_DEFAULT_ENGINE=NOWEB` — Baileys-based, much better history,
+requires a re-pair).
+
 ## License
 
 MIT. WAHA itself is licensed separately — see
