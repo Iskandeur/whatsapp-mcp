@@ -1,0 +1,28 @@
+services:
+  whatsapp-mcp:
+    build: .
+    container_name: whatsapp-mcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      - WAHA_BASE_URL=${WAHA_BASE_URL:-http://waha:3000}
+      - WAHA_SESSION=${WAHA_SESSION:-default}
+      - WAHA_API_KEY=${WAHA_API_KEY:-}
+      - MCP_API_KEY=${MCP_API_KEY}
+      - MCP_ALLOWED_HOSTS=${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      - PORT=8765
+    env_file:
+      - .env
+    networks:
+      - waha_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  waha_network:
+    external: true
+    name: deploy_default

@@ -1,0 +1,42 @@
+# Caddy vhost for the MCP server.
+# Replace ${MCP_DOMAIN} with your actual hostname (e.g. mcp.example.com) before
+# pasting this block into /etc/caddy/Caddyfile, or use scripts/install_caddy.sh
+# which does the substitution from your .env automatically.
+#
+# Prerequisites:
+#   - DNS A record for ${MCP_DOMAIN} → your VPS IP (set "DNS only" / unproxied
+#     until Caddy has issued the first certificate; you can re-enable proxying
+#     afterwards if you want)
+#   - The whatsapp-mcp container is listening on 127.0.0.1:8765
+#
+# Caddy handles TLS issuance and renewal automatically via Let's Encrypt — no
+# certbot needed.
+
+${MCP_DOMAIN} {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        -Server
+    }
+
+    handle /healthz {
+        reverse_proxy 127.0.0.1:8765
+    }
+
+    handle {
+        reverse_proxy 127.0.0.1:8765 {
+            # Streaming SSE — no buffering, long timeouts
+            flush_interval -1
+            transport http {
+                read_timeout 5m
+                write_timeout 5m
+            }
+        }
+    }
+
+    request_body {
+        max_size 50MB
+    }
+}
