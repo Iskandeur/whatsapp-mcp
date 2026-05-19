@@ -10,6 +10,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from server.tools import (
     messages, contacts, groups, media, actions, presence, sessions, chats,
+    exports,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -55,6 +56,7 @@ actions.register(mcp)
 presence.register(mcp)
 sessions.register(mcp)
 chats.register(mcp)
+exports.register(mcp)
 
 logger.info("Outils MCP WhatsApp enregistrés.")
 

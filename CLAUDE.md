@@ -51,6 +51,10 @@ server/
     sessions.py      get_session_status, restart_session (gated by confirm)
     chats.py         archive/unarchive, mark_unread, clear_messages,
                      delete_chat (last two gated by confirm)
+    exports.py       parse_export — parses a WhatsApp native .txt export
+                     (iOS/Android/US formats, multi-line continuations,
+                     media + system message detection). Useful when WAHA's
+                     own history is too thin for the requested analysis.
 ```
 
 ## Conventions to follow when editing
@@ -171,19 +175,21 @@ echo whatsapp-mcp | sudo -S -p '' git -C /opt/whatsapp-mcp push origin main
 - Contact chat IDs on modern WhatsApp arrive as `<digits>@lid` (Linked Identity),
   not `@c.us`. The legacy `@c.us` form still works in writes but most reads
   return `@lid`. Treat both as valid input/output.
-- **WAHA WEBJS engine doesn't backfill history.** WhatsApp Web lazy-loads
-  messages into IndexedDB only when a chat is physically opened in the
-  browser. `GET /api/{s}/chats/{id}/messages?limit=200` returns whatever is
-  in the cache right now, not an HTTP-driven historical sync. Right after
-  pairing or restart, most chats return 1-2 messages; active chats accumulate
-  over hours/days as new messages arrive. There is no API to force a
-  backfill. If the user wants real history, the options are: (a) wait for
-  passive accumulation, (b) switch the WAHA container to `NOWEB` engine
-  (`WHATSAPP_DEFAULT_ENGINE=NOWEB` — fundamentally different engine, requires
-  re-pair, has much better history), or (c) use WhatsApp's native chat export
-  on the phone and ingest the text. Don't silently fail when an agent asks
-  for analysis — `get_messages` and `get_chat_media_count` docstrings already
-  warn about this; surface it to the user when results look thin.
+- **WAHA engine history behaviour.** Two engines, two histories:
+  - `WEBJS` (Chromium puppeteer of WhatsApp Web) lazy-loads messages into
+    IndexedDB only when a chat is physically opened. The API returns
+    whatever's already cached; there is no HTTP-driven sync. Right after
+    pairing most chats return 1-2 messages.
+  - `NOWEB` (Baileys/multidevice protocol) does a full sync on pair when
+    `WHATSAPP_DEFAULT_ENGINE_NOWEB_STORE_ENABLED=true` and
+    `..._FULLSYNC=true`. This is what the user's deployment uses
+    (`/opt/whatsapp-bot/deploy/docker-compose.waha.yml`). Switching engines
+    requires re-pairing, so don't toggle without consent.
+  - When even NOWEB falls short (years-old history), fall back to the
+    user's WhatsApp native chat export (`Settings → Chats → Export chat`)
+    fed through `whatsapp_parse_export`.
+  - `get_messages` / `get_chat_media_count` docstrings already warn about
+    thin results; surface it to the user instead of silently failing.
 
 ## When the user asks for a new tool
 

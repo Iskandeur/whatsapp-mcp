@@ -25,6 +25,7 @@ session (web, desktop, mobile) can use it after a one-line setup in
 | **presence** | `start_typing`, `stop_typing`, `set_presence`, `get_presence` |
 | **sessions** | `get_session_status`, `restart_session` |
 | **chats** | `archive_chat`, `unarchive_chat`, `mark_unread`, `clear_messages`, `delete_chat` |
+| **exports** | `parse_export` — ingest a WhatsApp native `.txt` export for retro analysis when WAHA's history is incomplete |
 
 All `chat_id` arguments accept `<digits>@lid` (modern), `<digits>@c.us` (legacy),
 `<digits>@g.us` (groups), or a raw international number like `33612345678`
