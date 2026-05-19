@@ -8,7 +8,9 @@ import logging
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from server.tools import messages, contacts, groups, media, actions, presence
+from server.tools import (
+    messages, contacts, groups, media, actions, presence, sessions, chats,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -51,6 +53,8 @@ groups.register(mcp)
 media.register(mcp)
 actions.register(mcp)
 presence.register(mcp)
+sessions.register(mcp)
+chats.register(mcp)
 
 logger.info("Outils MCP WhatsApp enregistrés.")
 
