@@ -5,7 +5,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import (
-    waha_post, waha_put, waha_delete, resolve_chat_id,
+    waha_get, waha_post, waha_put, waha_delete, resolve_chat_id,
     handle_error, WAHA_SESSION,
 )
 from server.schema import slim_send_result
@@ -44,6 +44,46 @@ def register(mcp_instance: FastMCP):
                 {"success": True, "message_id": params.message_id, "reaction": params.reaction},
                 ensure_ascii=False, indent=2,
             )
+        except Exception as e:
+            return handle_error(e)
+
+    class GetReactionsInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="Chat contenant le message.")
+        message_id: str = Field(..., description="ID du message dont on veut les réactions.")
+
+    @mcp_instance.tool(
+        name="whatsapp_get_message_reactions",
+        annotations={
+            "title": "Lire les réactions sur un message",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_get_message_reactions(params: GetReactionsInput) -> str:
+        """Indique si un message a au moins une réaction (champ `_data.hasReaction`).
+
+        ⚠️ Limitation WAHA Core / WebJS : le détail des réactions (emoji + auteur)
+        n'est pas exposé. Seul `has_reaction: bool` est fiable. Pour le détail
+        par utilisateur, il faut WAHA Plus (engine NOWEB / GoWS).
+        """
+        try:
+            chat_id = await resolve_chat_id(params.chat_id)
+            msg = await waha_get(
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages/{params.message_id}",
+                params={"downloadMedia": "false"},
+            )
+            data = (msg.get("_data") or {}) if isinstance(msg, dict) else {}
+            return json.dumps({
+                "success": True,
+                "message_id": params.message_id,
+                "chat_id": chat_id,
+                "has_reaction": bool(data.get("hasReaction")),
+                "body_preview": ((msg.get("body") or "") if isinstance(msg, dict) else "")[:200],
+                "note": "WAHA Core/WebJS ne surface pas le détail des réactions (emoji + auteur). Réservé à WAHA Plus.",
+            }, ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
 

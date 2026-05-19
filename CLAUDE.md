@@ -28,8 +28,11 @@ server/
                      slim_send_result — the only place payload shapes live.
                      Every tool funnels its WAHA response through these.
   tools/
-    messages.py      get_messages, get_message, send_text, mark_seen,
-                     search_messages, download_media
+    messages.py      get_messages, get_message, send_text, batch_send_text
+                     (gated by confirm), reply_to_message (fetches+previews
+                     the quoted body), mark_seen, search_messages,
+                     download_media, get_chat_media_count,
+                     list_forwarded_messages
     contacts.py      list_contacts, get_contact, check_numbers, get_profile,
                      set_profile_name/status, get_profile_picture, get_about,
                      block_contact/unblock_contact, list_blocked
@@ -39,9 +42,10 @@ server/
                      get/revoke_invite_link, join_group
     media.py         send_image, send_file, send_voice, send_location,
                      send_contact, send_poll
-    actions.py       send_reaction, star_message, edit_message,
-                     delete_message, forward_message, pin_message,
-                     unpin_message
+    actions.py       send_reaction, get_message_reactions (hasReaction
+                     only — full reactions are WAHA Plus), star_message,
+                     edit_message, delete_message, forward_message,
+                     pin_message, unpin_message
     presence.py      start_typing (with optional auto-stop), stop_typing,
                      set_presence, get_presence
     sessions.py      get_session_status, restart_session (gated by confirm)

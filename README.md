@@ -13,15 +13,15 @@ session (web, desktop, mobile) can use it after a one-line setup in
 
 ## What you get
 
-~55 tools registered with the MCP client, grouped by module under `server/tools/`:
+~60 tools registered with the MCP client, grouped by module under `server/tools/`:
 
 | Module | Tools |
 | --- | --- |
-| **messages** | `get_messages`, `get_message`, `send_text`, `mark_seen`, `search_messages`, `download_media` |
+| **messages** | `get_messages`, `get_message`, `send_text`, `batch_send_text`, `reply_to_message`, `mark_seen`, `search_messages`, `download_media`, `get_chat_media_count`, `list_forwarded_messages` |
 | **contacts** | `list_contacts`, `get_contact`, `check_numbers`, `get_profile`, `set_profile_name`, `set_profile_status`, `get_profile_picture`, `get_about`, `block_contact`, `unblock_contact`, `list_blocked` |
 | **groups** | `list_chats`, `get_group_info`, `create_group`, `add_participants`, `remove_participants`, `promote_participants`, `demote_participants`, `leave_group`, `set_group_subject`, `set_group_description`, `set_group_settings`, `get_invite_link`, `revoke_invite_link`, `join_group` |
 | **media** | `send_image`, `send_file`, `send_voice`, `send_location`, `send_contact`, `send_poll` |
-| **actions** | `send_reaction`, `star_message`, `edit_message`, `delete_message`, `forward_message`, `pin_message`, `unpin_message` |
+| **actions** | `send_reaction`, `get_message_reactions`, `star_message`, `edit_message`, `delete_message`, `forward_message`, `pin_message`, `unpin_message` |
 | **presence** | `start_typing`, `stop_typing`, `set_presence`, `get_presence` |
 | **sessions** | `get_session_status`, `restart_session` |
 | **chats** | `archive_chat`, `unarchive_chat`, `mark_unread`, `clear_messages`, `delete_chat` |

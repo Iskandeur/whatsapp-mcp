@@ -52,6 +52,10 @@ def slim_message(m: dict, include_media: bool = True) -> dict:
         "hasMedia": m.get("hasMedia", False),
         "hasQuoted": quoted,
         "quotedBody": quoted_body,
+        "hasReaction": bool(data.get("hasReaction")),
+        "isForwarded": bool(data.get("isForwarded")),
+        "forwardsCount": data.get("forwardsCount") or data.get("forwardingScore") or 0,
+        "starred": bool(data.get("star")),
     }
 
     if include_media:

@@ -1,8 +1,9 @@
 """MCP tools for reading and sending WhatsApp messages."""
+import asyncio
 import base64
 import json
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Optional
+from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import (
@@ -290,6 +291,210 @@ def register(mcp_instance: FastMCP):
                     out["base64_skipped"] = f"download failed: {type(fe).__name__}"
 
             return json.dumps(out, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return handle_error(e)
+
+    class BatchSendTextInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_ids: List[str] = Field(
+            ...,
+            min_length=1, max_length=50,
+            description="Liste de destinataires (chat_ids ou numéros bruts). Résolus automatiquement.",
+        )
+        text: str = Field(..., min_length=1, max_length=65536, description="Texte commun à tous les destinataires.")
+        delay_between_seconds: Optional[float] = Field(
+            default=1.0, ge=0.0, le=30.0,
+            description="Pause entre chaque envoi (anti rate-limit WhatsApp).",
+        )
+        confirm: bool = Field(
+            ...,
+            description="Doit être True. Garde-fou contre les envois en masse accidentels.",
+        )
+
+    @mcp_instance.tool(
+        name="whatsapp_batch_send_text",
+        annotations={
+            "title": "Envoyer le même texte à plusieurs chats",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_batch_send_text(params: BatchSendTextInput) -> str:
+        """Envoie le même texte à N destinataires (séquentiel, avec pause configurable).
+
+        Retourne `{count, sent: [...], failed: [...]}`. Échec sur l'un n'arrête pas
+        les suivants. Garde-fou: `confirm=true` obligatoire.
+        """
+        if not params.confirm:
+            return json.dumps({"success": False, "error": "confirm doit être True pour un envoi en masse."},
+                              ensure_ascii=False, indent=2)
+        sent, failed = [], []
+        for i, raw_chat in enumerate(params.chat_ids):
+            try:
+                chat_id = await resolve_chat_id(raw_chat)
+                r = await waha_post("/api/sendText", {
+                    "session": WAHA_SESSION,
+                    "chatId": chat_id,
+                    "text": params.text,
+                })
+                sent.append(slim_send_result(r, chat_id_hint=chat_id))
+            except Exception as e:
+                failed.append({"chat_id": raw_chat, "error": handle_error(e)})
+            if i < len(params.chat_ids) - 1 and params.delay_between_seconds:
+                await asyncio.sleep(params.delay_between_seconds)
+        return json.dumps({"count": len(params.chat_ids), "sent_count": len(sent),
+                           "failed_count": len(failed), "sent": sent, "failed": failed},
+                          ensure_ascii=False, indent=2)
+
+    class ReplyToMessageInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="Chat contenant le message original.")
+        message_id: str = Field(..., description="ID du message auquel répondre.")
+        text: str = Field(..., min_length=1, max_length=65536, description="Texte de la réponse.")
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
+
+    @mcp_instance.tool(
+        name="whatsapp_reply_to_message",
+        annotations={
+            "title": "Répondre à un message WhatsApp (avec citation)",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_reply_to_message(params: ReplyToMessageInput) -> str:
+        """Répond à un message en le citant. Fetch automatiquement le message original
+        pour inclure un aperçu (200 chars) dans la réponse — pratique pour confirmer
+        à l'agent ce qui est cité.
+        """
+        try:
+            chat_id = await resolve_chat_id(params.chat_id)
+            quoted_preview = None
+            try:
+                orig = await waha_get(
+                    f"/api/{WAHA_SESSION}/chats/{chat_id}/messages/{params.message_id}",
+                    params={"downloadMedia": "false"},
+                )
+                if isinstance(orig, dict):
+                    quoted_preview = (orig.get("body") or "")[:200]
+            except Exception:
+                pass
+            result = await waha_post("/api/sendText", {
+                "session": WAHA_SESSION,
+                "chatId": chat_id,
+                "text": params.text,
+                "reply_to": params.message_id,
+            })
+            if params.verbose:
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            out = slim_send_result(result, chat_id_hint=chat_id)
+            out["quoted"] = {"message_id": params.message_id, "body_preview": quoted_preview}
+            return json.dumps(out, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return handle_error(e)
+
+    class ChatScanInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="Chat à scanner.")
+        scan_limit: Optional[int] = Field(
+            default=200, ge=1, le=1000,
+            description="Nombre de messages récents à scanner (la recherche reste locale).",
+        )
+
+    @mcp_instance.tool(
+        name="whatsapp_get_chat_media_count",
+        annotations={
+            "title": "Compter les médias d'un chat par type",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_get_chat_media_count(params: ChatScanInput) -> str:
+        """Scanne les `scan_limit` derniers messages d'un chat et compte par type.
+
+        Retourne `{total_scanned, counts: {chat: N, image: N, video: N, audio: N,
+        ptt: N, document: N, sticker: N, location: N, vcard: N, poll_creation: N,
+        ...}, media_total}`. Le total média exclut les messages texte (`chat`).
+        """
+        try:
+            chat_id = await resolve_chat_id(params.chat_id)
+            msgs = await waha_get(
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages",
+                params={"limit": params.scan_limit, "downloadMedia": "false"},
+            )
+            if not isinstance(msgs, list):
+                return json.dumps({"success": False, "error": "Réponse WAHA inattendue."},
+                                  ensure_ascii=False, indent=2)
+            counts: dict[str, int] = {}
+            media_total = 0
+            for m in msgs:
+                t = (m.get("_data") or {}).get("type") or m.get("type") or "unknown"
+                counts[t] = counts.get(t, 0) + 1
+                if m.get("hasMedia"):
+                    media_total += 1
+            return json.dumps({
+                "chat_id": chat_id,
+                "total_scanned": len(msgs),
+                "counts": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
+                "media_total": media_total,
+            }, ensure_ascii=False, indent=2)
+        except Exception as e:
+            return handle_error(e)
+
+    class ListForwardedInput(BaseModel):
+        model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+        chat_id: str = Field(..., description="Chat à scanner.")
+        scan_limit: Optional[int] = Field(
+            default=500, ge=1, le=2000,
+            description="Profondeur de scan (messages récents).",
+        )
+        limit: Optional[int] = Field(
+            default=20, ge=1, le=200,
+            description="Nombre max de résultats à retourner.",
+        )
+
+    @mcp_instance.tool(
+        name="whatsapp_list_forwarded_messages",
+        annotations={
+            "title": "Lister les messages transférés d'un chat",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": True,
+        },
+    )
+    async def whatsapp_list_forwarded_messages(params: ListForwardedInput) -> str:
+        """Liste les messages marqués 'forwarded' dans un chat (champ `_data.isForwarded`).
+
+        Retourne aussi `forwardsCount` quand WAHA le fournit (≥ 5 = 'frequently
+        forwarded' dans l'UI WhatsApp).
+        """
+        try:
+            chat_id = await resolve_chat_id(params.chat_id)
+            msgs = await waha_get(
+                f"/api/{WAHA_SESSION}/chats/{chat_id}/messages",
+                params={"limit": params.scan_limit, "downloadMedia": "false"},
+            )
+            if not isinstance(msgs, list):
+                return json.dumps({"success": False, "error": "Réponse WAHA inattendue."},
+                                  ensure_ascii=False, indent=2)
+            forwarded = [
+                slim_message(m, include_media=False)
+                for m in msgs
+                if (m.get("_data") or {}).get("isForwarded")
+            ]
+            forwarded.sort(key=lambda m: m.get("timestamp") or 0, reverse=True)
+            return json.dumps({
+                "chat_id": chat_id,
+                "total_scanned": len(msgs),
+                "count": len(forwarded),
+                "messages": forwarded[: params.limit],
+            }, ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
 
