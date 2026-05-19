@@ -23,30 +23,36 @@ async def waha_get(path: str, params: Optional[dict] = None) -> Any:
         return r.json()
 
 
+def _parse_or_ok(r: httpx.Response) -> Any:
+    """Some WAHA endpoints (PUT /api/reaction, PUT /api/star, POST /api/sendSeen)
+    return 200/204 with an empty or non-JSON body. Don't crash on those."""
+    if not r.text:
+        return {"ok": True}
+    try:
+        return r.json()
+    except Exception:
+        return {"ok": True, "raw": r.text[:500]}
+
+
 async def waha_post(path: str, body: dict) -> Any:
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         r = await client.post(f"{WAHA_BASE}{path}", headers=_headers(), json=body)
         r.raise_for_status()
-        return r.json()
+        return _parse_or_ok(r)
 
 
 async def waha_put(path: str, body: dict) -> Any:
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         r = await client.put(f"{WAHA_BASE}{path}", headers=_headers(), json=body)
         r.raise_for_status()
-        return r.json()
+        return _parse_or_ok(r)
 
 
 async def waha_delete(path: str) -> Any:
     async with httpx.AsyncClient(timeout=TIMEOUT) as client:
         r = await client.delete(f"{WAHA_BASE}{path}", headers=_headers())
         r.raise_for_status()
-        if r.text:
-            try:
-                return r.json()
-            except Exception:
-                return {"ok": True}
-        return {"ok": True}
+        return _parse_or_ok(r)
 
 
 async def resolve_chat_id(value: str) -> str:

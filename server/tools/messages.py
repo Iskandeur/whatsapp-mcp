@@ -67,6 +67,22 @@ def register(mcp_instance: FastMCP):
             )
             if isinstance(result, list):
                 slim = [slim_message(m, include_media=bool(params.download_media)) for m in result]
+                if (
+                    not chat_id.endswith("@g.us")
+                    and any(not m.get("pushName") and not m.get("fromMe") for m in slim)
+                ):
+                    try:
+                        contact = await waha_get(f"/api/{WAHA_SESSION}/contacts/{chat_id}")
+                        fallback = None
+                        if isinstance(contact, dict):
+                            fallback = (contact.get("name") or contact.get("pushname")
+                                        or contact.get("shortName"))
+                        if fallback:
+                            for m in slim:
+                                if not m.get("pushName") and not m.get("fromMe"):
+                                    m["pushName"] = fallback
+                    except Exception:
+                        pass
                 if params.since_timestamp:
                     slim = [m for m in slim if (m.get("timestamp") or 0) >= params.since_timestamp]
                 if params.from_me is not None:
