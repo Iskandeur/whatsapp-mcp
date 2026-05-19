@@ -5,27 +5,7 @@ from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import waha_get, waha_post, handle_error, WAHA_SESSION
-
-
-def _slim_chat(c: dict) -> dict:
-    """Return only the fields a model actually needs to decide what to do."""
-    cid = c.get("id")
-    if isinstance(cid, dict):
-        cid = cid.get("_serialized") or cid.get("user")
-    last = c.get("lastMessage") or {}
-    last_body = (last.get("body") or "")[:200] if isinstance(last, dict) else ""
-    last_ts = last.get("timestamp") if isinstance(last, dict) else None
-    return {
-        "id": cid,
-        "name": c.get("name"),
-        "isGroup": c.get("isGroup", False),
-        "unreadCount": c.get("unreadCount", 0),
-        "timestamp": c.get("timestamp") or last_ts,
-        "lastMessagePreview": last_body,
-        "archived": c.get("archived", False),
-        "pinned": c.get("pinned", False),
-        "muted": c.get("isMuted", False),
-    }
+from server.schema import slim_chat, slim_group
 
 
 def register(mcp_instance: FastMCP):
@@ -34,27 +14,48 @@ def register(mcp_instance: FastMCP):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         name_contains: Optional[str] = Field(
             default=None,
-            description="Filtrer par nom (sous-chaîne, insensible à la casse). Ex: 'meute' pour ne récupérer que les groupes scout.",
+            description="Filtrer par nom (sous-chaîne, insensible à la casse).",
         )
         only_groups: Optional[bool] = Field(
             default=False,
             description="Si True, ne retourne que les groupes (@g.us).",
         )
+        only_contacts: Optional[bool] = Field(
+            default=False,
+            description="Si True, ne retourne que les contacts (exclut les groupes).",
+        )
         only_unread: Optional[bool] = Field(
             default=False,
             description="Si True, ne retourne que les chats avec unreadCount > 0.",
         )
+        include_archived: Optional[bool] = Field(
+            default=False,
+            description="Inclure les chats archivés. Par défaut, ils sont exclus.",
+        )
+        since_timestamp: Optional[int] = Field(
+            default=None,
+            description="Unix timestamp (secondes). Ne retourne que les chats actifs après ce moment.",
+        )
         limit: Optional[int] = Field(
             default=50,
-            description="Nombre max de chats à retourner (1-200). Triés par activité récente.",
+            description="Nombre max de chats à retourner après filtrage (1-500).",
             ge=1,
-            le=200,
+            le=500,
+        )
+        offset: Optional[int] = Field(
+            default=0,
+            description="Offset pour paginer dans la liste filtrée.",
+            ge=0,
+        )
+        sort_by: Optional[str] = Field(
+            default="timestamp",
+            description="Tri: 'timestamp' (activité récente, défaut), 'unread' (non lus en premier), 'name' (alpha).",
         )
 
     @mcp_instance.tool(
         name="whatsapp_list_chats",
         annotations={
-            "title": "Lister les conversations WhatsApp (filtré)",
+            "title": "Lister les conversations WhatsApp (filtré, paginé)",
             "readOnlyHint": True,
             "destructiveHint": False,
             "idempotentHint": True,
@@ -62,11 +63,10 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_list_chats(params: Optional[ListChatsInput] = None) -> str:
-        """Retourne les conversations actives, en version légère.
+        """Retourne les conversations actives, en version slim et filtrée.
 
-        Pour trouver un groupe précis, passe `name_contains='meute'` plutôt que de
-        tout lister. Les groupes ont un id terminant par '@g.us', les contacts par '@c.us'.
-        Chaque chat est réduit aux champs essentiels (id, name, unreadCount, lastMessagePreview).
+        WAHA renvoie tous les chats du compte (600+ possible). Filtrer côté serveur
+        avec `name_contains`/`only_groups`/`only_unread` avant pagination.
         """
         if params is None:
             params = ListChatsInput()
@@ -75,20 +75,45 @@ def register(mcp_instance: FastMCP):
             if not isinstance(result, list):
                 return json.dumps(result, ensure_ascii=False, indent=2)
 
-            slim = [_slim_chat(c) for c in result]
+            total_raw = len(result)
+            slim = [slim_chat(c) for c in result]
+
+            if not params.include_archived:
+                slim = [c for c in slim if not c.get("archived")]
             if params.name_contains:
                 q = params.name_contains.lower()
                 slim = [c for c in slim if c.get("name") and q in c["name"].lower()]
             if params.only_groups:
                 slim = [c for c in slim if c.get("isGroup")]
+            if params.only_contacts:
+                slim = [c for c in slim if not c.get("isGroup")]
             if params.only_unread:
                 slim = [c for c in slim if (c.get("unreadCount") or 0) > 0]
+            if params.since_timestamp:
+                slim = [c for c in slim if (c.get("timestamp") or 0) >= params.since_timestamp]
 
-            slim.sort(key=lambda c: c.get("timestamp") or 0, reverse=True)
+            sort_by = (params.sort_by or "timestamp").lower()
+            if sort_by == "unread":
+                slim.sort(key=lambda c: (c.get("unreadCount") or 0, c.get("timestamp") or 0), reverse=True)
+            elif sort_by == "name":
+                slim.sort(key=lambda c: (c.get("name") or "").lower())
+            else:
+                slim.sort(key=lambda c: c.get("timestamp") or 0, reverse=True)
+
             total_matching = len(slim)
-            slim = slim[: params.limit or 50]
+            offset = params.offset or 0
+            limit = params.limit or 50
+            page = slim[offset: offset + limit]
+            next_offset = offset + len(page) if (offset + len(page)) < total_matching else None
             return json.dumps(
-                {"total_matching": total_matching, "returned": len(slim), "chats": slim},
+                {
+                    "total_raw": total_raw,
+                    "total_matching": total_matching,
+                    "returned": len(page),
+                    "offset": offset,
+                    "next_offset": next_offset,
+                    "chats": page,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -97,10 +122,8 @@ def register(mcp_instance: FastMCP):
 
     class GetGroupInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-        group_id: str = Field(
-            ...,
-            description="ID du groupe, format: 'XXXXXXXXXX@g.us'",
-        )
+        group_id: str = Field(..., description="ID du groupe, format: '<digits>@g.us'")
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
 
     @mcp_instance.tool(
         name="whatsapp_get_group_info",
@@ -116,7 +139,9 @@ def register(mcp_instance: FastMCP):
         """Retourne les métadonnées d'un groupe : description, participants, admins."""
         try:
             result = await waha_get(f"/api/{WAHA_SESSION}/groups/{params.group_id}")
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            if params.verbose:
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            return json.dumps(slim_group(result), ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
 
@@ -125,9 +150,10 @@ def register(mcp_instance: FastMCP):
         name: str = Field(..., description="Nom du groupe", min_length=1, max_length=100)
         participants: List[str] = Field(
             ...,
-            description="Liste des IDs participants, format: ['33612345678@c.us', ...]",
+            description="IDs participants, format: ['<digits>@c.us', '<digits>@lid', ...].",
             min_length=1,
         )
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
 
     @mcp_instance.tool(
         name="whatsapp_create_group",
@@ -147,6 +173,8 @@ def register(mcp_instance: FastMCP):
                 "participants": [{"id": p} for p in params.participants],
             }
             result = await waha_post(f"/api/{WAHA_SESSION}/groups", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            if params.verbose:
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            return json.dumps(slim_group(result), ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)

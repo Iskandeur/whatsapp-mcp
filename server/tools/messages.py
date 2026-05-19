@@ -5,28 +5,7 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import waha_get, waha_post, handle_error, WAHA_SESSION
-
-
-def _slim_message(m: dict) -> dict:
-    """Strip WAHA message to fields a summarizer actually needs."""
-    if not isinstance(m, dict):
-        return m
-    data = m.get("_data") or {}
-    author = m.get("author") or m.get("from") or ""
-    if isinstance(author, dict):
-        author = author.get("_serialized") or author.get("user") or ""
-    return {
-        "id": m.get("id") if not isinstance(m.get("id"), dict) else m["id"].get("_serialized"),
-        "timestamp": m.get("timestamp"),
-        "from": author,
-        "fromMe": m.get("fromMe", False),
-        "pushName": data.get("notifyName") or m.get("_pushName") or "",
-        "type": m.get("type", ""),
-        "body": (m.get("body") or "")[:4000],
-        "hasMedia": m.get("hasMedia", False),
-        "hasQuoted": m.get("hasQuotedMsg", False),
-        "quotedBody": ((m.get("_data", {}).get("quotedMsg") or {}).get("body") or "")[:200] if m.get("hasQuotedMsg") else "",
-    }
+from server.schema import slim_message, slim_send_result
 
 
 def register(mcp_instance: FastMCP):
@@ -35,7 +14,7 @@ def register(mcp_instance: FastMCP):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         chat_id: str = Field(
             ...,
-            description="ID du chat. Format contact: '33612345678@c.us'. Format groupe: 'XXXXXXXX@g.us'",
+            description="ID du chat. Contacts récents: '<digits>@lid' (Linked Identity). Legacy: '<digits>@c.us'. Groupes: '<digits>@g.us'.",
         )
         limit: Optional[int] = Field(
             default=20,
@@ -45,11 +24,15 @@ def register(mcp_instance: FastMCP):
         )
         download_media: Optional[bool] = Field(
             default=False,
-            description="Si True, inclut les URLs des médias dans la réponse",
+            description="Si True, demande à WAHA d'inclure le bloc media (url, mimetype, filename, size) pour les messages avec hasMedia=true.",
         )
         since_timestamp: Optional[int] = Field(
             default=None,
-            description="Unix timestamp (secondes). Ne retourne que les messages postérieurs à ce moment. Utile pour 'cette semaine'.",
+            description="Unix timestamp (secondes). Ne retourne que les messages postérieurs à ce moment.",
+        )
+        from_me: Optional[bool] = Field(
+            default=None,
+            description="Filtre: True = uniquement mes messages, False = uniquement ceux du correspondant, None = tous.",
         )
 
     @mcp_instance.tool(
@@ -63,20 +46,26 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_get_messages(params: GetMessagesInput) -> str:
-        """Récupère les derniers messages d'une conversation WhatsApp.
+        """Récupère les derniers messages d'une conversation WhatsApp (slim).
 
-        Retourne une liste de messages avec expéditeur, horodatage, contenu et type.
-        Pour les groupes, chaque message inclut le nom de l'expéditeur.
+        Retourne `{count, messages: [{id, timestamp, from, to, fromMe, pushName,
+        type, body, ack, hasMedia, media?, hasQuoted, quotedBody}]}`. Triés du
+        plus ancien au plus récent.
         """
         try:
             result = await waha_get(
                 f"/api/{WAHA_SESSION}/chats/{params.chat_id}/messages",
-                params={"limit": params.limit, "downloadMedia": str(params.download_media).lower()},
+                params={
+                    "limit": params.limit,
+                    "downloadMedia": str(bool(params.download_media)).lower(),
+                },
             )
             if isinstance(result, list):
-                slim = [_slim_message(m) for m in result]
+                slim = [slim_message(m, include_media=bool(params.download_media)) for m in result]
                 if params.since_timestamp:
                     slim = [m for m in slim if (m.get("timestamp") or 0) >= params.since_timestamp]
+                if params.from_me is not None:
+                    slim = [m for m in slim if bool(m.get("fromMe")) == params.from_me]
                 slim.sort(key=lambda m: m.get("timestamp") or 0)
                 return json.dumps({"count": len(slim), "messages": slim}, ensure_ascii=False, indent=2)
             return json.dumps(result, ensure_ascii=False, indent=2)
@@ -87,7 +76,7 @@ def register(mcp_instance: FastMCP):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         chat_id: str = Field(
             ...,
-            description="ID du destinataire. Contact: '33612345678@c.us', Groupe: 'ID@g.us'",
+            description="ID du destinataire. Contact: '<digits>@lid' ou '<digits>@c.us'. Groupe: '<digits>@g.us'.",
         )
         text: str = Field(
             ...,
@@ -98,6 +87,10 @@ def register(mcp_instance: FastMCP):
         reply_to: Optional[str] = Field(
             default=None,
             description="ID du message auquel répondre (optionnel)",
+        )
+        verbose: Optional[bool] = Field(
+            default=False,
+            description="Si True, retourne le payload WAHA brut au lieu du résumé {success, message_id, ...}.",
         )
 
     @mcp_instance.tool(
@@ -111,7 +104,11 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_send_text(params: SendTextInput) -> str:
-        """Envoie un message texte à un contact ou un groupe WhatsApp."""
+        """Envoie un message texte à un contact ou un groupe WhatsApp.
+
+        Retourne par défaut `{success, message_id, chat_id, timestamp, type, ack}`.
+        Passe `verbose=true` pour récupérer le payload WAHA complet.
+        """
         try:
             body = {
                 "session": WAHA_SESSION,
@@ -121,7 +118,10 @@ def register(mcp_instance: FastMCP):
             if params.reply_to:
                 body["reply_to"] = params.reply_to
             result = await waha_post("/api/sendText", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            if params.verbose:
+                return json.dumps(result, ensure_ascii=False, indent=2)
+            return json.dumps(slim_send_result(result, chat_id_hint=params.chat_id),
+                              ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
 
@@ -144,24 +144,37 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_mark_seen(params: MarkSeenInput) -> str:
-        """Marque un chat ou un message spécifique comme lu (double coche bleue)."""
+        """Marque un chat ou un message spécifique comme lu (double coche bleue).
+
+        WAHA renvoie un payload peu informatif (`{"ids": null}`) — on le remplace
+        par `{success: true, chat_id, message_id?}`.
+        """
         try:
             body = {"session": WAHA_SESSION, "chatId": params.chat_id}
             if params.message_id:
                 body["messageId"] = params.message_id
-            result = await waha_post("/api/sendSeen", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            await waha_post("/api/sendSeen", body)
+            out = {"success": True, "chat_id": params.chat_id}
+            if params.message_id:
+                out["message_id"] = params.message_id
+            return json.dumps(out, ensure_ascii=False, indent=2)
         except Exception as e:
             return handle_error(e)
 
     class SearchMessagesInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
-        query: str = Field(..., description="Texte à rechercher", min_length=1)
+        query: str = Field(..., description="Texte à rechercher (insensible à la casse)", min_length=1)
         chat_id: Optional[str] = Field(
             default=None,
-            description="Limiter la recherche à un chat. Si absent, cherche dans le chat le plus récent.",
+            description="Limiter la recherche à un chat. Si absent, cherche dans les 5 chats les plus récents.",
         )
         limit: Optional[int] = Field(default=20, ge=1, le=100)
+        scan_per_chat: Optional[int] = Field(
+            default=200,
+            ge=20,
+            le=1000,
+            description="Nombre de messages récents à scanner par chat (fallback local, WAHA Core n'a pas de search serveur).",
+        )
 
     @mcp_instance.tool(
         name="whatsapp_search_messages",
@@ -177,14 +190,21 @@ def register(mcp_instance: FastMCP):
         """Recherche locale : récupère un lot de messages et filtre par texte côté MCP.
 
         WAHA Core n'a pas d'endpoint de recherche serveur, donc on récupère les
-        derniers messages et on filtre localement.
+        `scan_per_chat` messages les plus récents par chat et on filtre localement.
         """
         try:
             if params.chat_id:
                 chats_to_search = [params.chat_id]
             else:
                 chats = await waha_get(f"/api/{WAHA_SESSION}/chats", params={"limit": 10})
-                chats_to_search = [c.get("id") for c in chats if c.get("id")][:5]
+                chats_to_search = []
+                for c in chats[:10]:
+                    cid = c.get("id")
+                    if isinstance(cid, dict):
+                        cid = cid.get("_serialized")
+                    if cid:
+                        chats_to_search.append(cid)
+                chats_to_search = chats_to_search[:5]
 
             matches = []
             q = params.query.lower()
@@ -192,19 +212,22 @@ def register(mcp_instance: FastMCP):
                 try:
                     msgs = await waha_get(
                         f"/api/{WAHA_SESSION}/chats/{cid}/messages",
-                        params={"limit": 100, "downloadMedia": "false"},
+                        params={"limit": params.scan_per_chat, "downloadMedia": "false"},
                     )
                     for m in msgs:
                         body_txt = (m.get("body") or "").lower()
                         if q in body_txt:
-                            matches.append(m)
+                            matches.append(slim_message(m, include_media=False))
                             if len(matches) >= params.limit:
                                 break
                 except Exception:
                     continue
                 if len(matches) >= params.limit:
                     break
-            return json.dumps({"query": params.query, "count": len(matches), "messages": matches},
-                              ensure_ascii=False, indent=2)
+            return json.dumps(
+                {"query": params.query, "count": len(matches), "messages": matches},
+                ensure_ascii=False,
+                indent=2,
+            )
         except Exception as e:
             return handle_error(e)

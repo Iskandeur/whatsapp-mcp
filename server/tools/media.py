@@ -5,9 +5,16 @@ from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
 from server.waha_client import waha_post, handle_error, WAHA_SESSION
+from server.schema import slim_send_result
 
 
 def register(mcp_instance: FastMCP):
+
+    def _wrap(result, chat_id: str, verbose: bool) -> str:
+        if verbose:
+            return json.dumps(result, ensure_ascii=False, indent=2)
+        return json.dumps(slim_send_result(result, chat_id_hint=chat_id),
+                          ensure_ascii=False, indent=2)
 
     class SendImageInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
@@ -17,6 +24,7 @@ def register(mcp_instance: FastMCP):
             description="URL publique de l'image (https://...). WAHA la télécharge et l'envoie.",
         )
         caption: Optional[str] = Field(default=None, description="Légende sous l'image")
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
 
     @mcp_instance.tool(
         name="whatsapp_send_image",
@@ -29,7 +37,10 @@ def register(mcp_instance: FastMCP):
         },
     )
     async def whatsapp_send_image(params: SendImageInput) -> str:
-        """Envoie une image depuis une URL publique vers un contact ou groupe WhatsApp."""
+        """Envoie une image depuis une URL publique vers un contact ou groupe WhatsApp.
+
+        Retourne `{success, message_id, chat_id, ...}` par défaut.
+        """
         try:
             body = {
                 "session": WAHA_SESSION,
@@ -39,7 +50,7 @@ def register(mcp_instance: FastMCP):
             if params.caption:
                 body["caption"] = params.caption
             result = await waha_post("/api/sendImage", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            return _wrap(result, params.chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)
 
@@ -52,6 +63,7 @@ def register(mcp_instance: FastMCP):
             description="Nom du fichier affiché dans WhatsApp. Ex: 'rapport.pdf'",
         )
         caption: Optional[str] = Field(default=None, description="Légende sous le fichier")
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
 
     @mcp_instance.tool(
         name="whatsapp_send_file",
@@ -77,14 +89,15 @@ def register(mcp_instance: FastMCP):
             if params.caption:
                 body["caption"] = params.caption
             result = await waha_post("/api/sendFile", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            return _wrap(result, params.chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)
 
     class SendVoiceInput(BaseModel):
         model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
         chat_id: str = Field(..., description="ID du destinataire")
-        url: str = Field(..., description="URL publique du fichier audio (OGG/MP3)")
+        url: str = Field(..., description="URL publique du fichier audio (OGG/Opus recommandé)")
+        verbose: Optional[bool] = Field(default=False, description="Retourne le payload WAHA brut.")
 
     @mcp_instance.tool(
         name="whatsapp_send_voice",
@@ -105,6 +118,6 @@ def register(mcp_instance: FastMCP):
                 "file": {"url": params.url},
             }
             result = await waha_post("/api/sendVoice", body)
-            return json.dumps(result, ensure_ascii=False, indent=2)
+            return _wrap(result, params.chat_id, bool(params.verbose))
         except Exception as e:
             return handle_error(e)

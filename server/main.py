@@ -26,12 +26,22 @@ mcp = FastMCP(
         allowed_origins=[f"https://{h}" for h in ALLOWED_HOSTS if "." in h] + ["http://localhost", "http://127.0.0.1"],
     ),
     instructions="""
-Tu as accès à WhatsApp via ces outils. Conventions importantes :
-- chat_id contact : '33612345678@c.us' (indicatif pays + numéro, sans '+')
-- chat_id groupe  : 'XXXXXXXXXX@g.us'
-- Utilise whatsapp_list_chats pour découvrir les IDs disponibles.
-- Avant d'envoyer un message, confirme toujours le destinataire avec l'utilisateur.
-- Ne jamais envoyer en masse sans confirmation explicite.
+Tu as accès à WhatsApp via ces outils.
+
+Formats de chat_id :
+- Contact moderne : '<digits>@lid' (Linked Identity, WhatsApp récent)
+- Contact legacy  : '<digits>@c.us' (toujours accepté, ex: '33612345678@c.us')
+- Groupe          : '<digits>@g.us'
+La plupart des contacts récents arrivent en @lid. Découvre l'ID exact via
+whatsapp_list_chats (filtre `name_contains`) ou whatsapp_get_contact (numéro
+brut → chat_id canonique).
+
+Confirmation : avant d'envoyer un message, confirme toujours le destinataire
+avec l'utilisateur. Jamais d'envoi en masse sans accord explicite.
+
+Verbosité : les tools d'envoi/lecture retournent un résumé compact par défaut
+(`{success, message_id, chat_id, ...}`). Passe `verbose=true` uniquement si
+tu as besoin du payload WAHA brut.
 """,
 )
 
