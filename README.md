@@ -13,22 +13,28 @@ session (web, desktop, mobile) can use it after a one-line setup in
 
 ## What you get
 
-12 tools registered with the MCP client:
+~55 tools registered with the MCP client, grouped by module under `server/tools/`:
 
-| Tool | What it does |
+| Module | Tools |
 | --- | --- |
-| `whatsapp_list_chats` | List active chats. Filterable by name, group/contact, unread, with a `limit`. Returns a *slim* representation (id, name, unread, last-message preview) — don't dump full chat objects into the LLM. |
-| `whatsapp_get_messages` | Fetch the last N messages of a chat. Supports `since_timestamp` for week/day queries. |
-| `whatsapp_send_text` | Send a plain-text message. Supports `reply_to`. |
-| `whatsapp_mark_seen` | Mark a chat (or single message) as read. |
-| `whatsapp_search_messages` | Client-side search — fetches recent messages and filters by substring (WAHA Core has no server search). |
-| `whatsapp_list_contacts` | List all known contacts (capped at 200 entries). |
-| `whatsapp_get_contact` | Check if a phone number is on WhatsApp. |
-| `whatsapp_get_group_info` | Metadata for a group (description, participants, admins). |
-| `whatsapp_create_group` | Create a new group. |
-| `whatsapp_send_image` | Send an image from a public URL. |
-| `whatsapp_send_file` | Send a file from a public URL. |
-| `whatsapp_send_voice` | Send a voice note from a public URL. |
+| **messages** | `get_messages`, `get_message`, `send_text`, `mark_seen`, `search_messages`, `download_media` |
+| **contacts** | `list_contacts`, `get_contact`, `check_numbers`, `get_profile`, `set_profile_name`, `set_profile_status`, `get_profile_picture`, `get_about`, `block_contact`, `unblock_contact`, `list_blocked` |
+| **groups** | `list_chats`, `get_group_info`, `create_group`, `add_participants`, `remove_participants`, `promote_participants`, `demote_participants`, `leave_group`, `set_group_subject`, `set_group_description`, `set_group_settings`, `get_invite_link`, `revoke_invite_link`, `join_group` |
+| **media** | `send_image`, `send_file`, `send_voice`, `send_location`, `send_contact`, `send_poll` |
+| **actions** | `send_reaction`, `star_message`, `edit_message`, `delete_message`, `forward_message`, `pin_message`, `unpin_message` |
+| **presence** | `start_typing`, `stop_typing`, `set_presence`, `get_presence` |
+| **sessions** | `get_session_status`, `restart_session` |
+| **chats** | `archive_chat`, `unarchive_chat`, `mark_unread`, `clear_messages`, `delete_chat` |
+
+All `chat_id` arguments accept `<digits>@lid` (modern), `<digits>@c.us` (legacy),
+`<digits>@g.us` (groups), or a raw international number like `33612345678`
+(resolved automatically via `check-exists`). Send / write tools return a compact
+`{success, message_id, chat_id, timestamp, type, ack}` envelope by default —
+pass `verbose=true` to get the raw WAHA payload.
+
+Read / list tools always return slim entities (≤2 KB each, no nested `_data`
+blobs). Don't change them to return raw WAHA objects without thinking about
+context-window cost (a full chat list on a busy account is multi-megabyte).
 
 ## Architecture
 
@@ -61,6 +67,9 @@ A few non-obvious design choices:
 - **`mcp.server.transport_security`** is configured with an allow-list of
   hostnames (DNS-rebinding protection). If you change the domain after first
   setup, update `MCP_ALLOWED_HOSTS` in `.env`.
+- **`/<MCP_API_KEY>/qr`** (HTML) and **`/<MCP_API_KEY>/qr.png`** proxy WAHA's
+  pairing QR through the same secret prefix, so you can re-pair from a phone
+  browser if the session drops without exposing WAHA's port publicly.
 
 ## Prerequisites
 
@@ -149,9 +158,17 @@ fails with NXDOMAIN). After the A record lands, run `sudo systemctl reload
 caddy` to kick the retry loop.
 
 **Claude.ai blew up on a tool call**
-Probably hit the context limit on a large response. The slim-payload pattern
-in `server/tools/groups.py:_slim_chat` and `server/tools/messages.py:_slim_message`
-exists for this reason — when you add new tools, follow the same approach.
+Probably hit the context limit on a large response. The slim-payload reducers
+live in `server/schema.py` (`slim_message`, `slim_chat`, `slim_send_result`,
+`slim_contact`, `slim_group`); every read / list / send tool funnels through
+them. When you add a new tool, reuse the existing reducer or add one alongside
+— don't return raw WAHA dicts.
+
+**Session went to `SCAN_QR_CODE`**
+WAHA lost the pairing (logout, container wipe, or WhatsApp signed you out).
+Visit `https://your.domain.tld/<MCP_API_KEY>/qr` on a second screen and scan
+from your phone. The session volume is persistent, so once paired the QR
+endpoint goes quiet again.
 
 ## License
 
