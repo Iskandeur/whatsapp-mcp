@@ -144,6 +144,31 @@ echo whatsapp-mcp | sudo -S -p '' bash -c '. /opt/whatsapp-mcp/.env; \
 echo whatsapp-mcp | sudo -S -p '' git -C /opt/whatsapp-mcp push origin main
 ```
 
+## Bringing the whole stack back from cold
+
+If nothing is running (e.g. after a long pause), order matters:
+
+1. **WAHA first, under compose project `deploy`** — this reuses the paired
+   volume `deploy_waha_sessions` and creates network `deploy_default`, which
+   the MCP joins as `external`. Do NOT let it default to project `whatsapp-bot`
+   (setup.sh runs compose from `/opt/whatsapp-bot`) or you get a NEW, unpaired
+   volume and a QR re-scan:
+   ```bash
+   echo whatsapp-mcp | sudo -S -p '' bash -c \
+     'cd /opt/whatsapp-bot/deploy && docker compose -p deploy -f docker-compose.waha.yml up -d'
+   ```
+2. Wait for session `default` to reach `WORKING` (NOWEB restores in seconds; no
+   QR re-scan when the volume is reused).
+3. **MCP next:** `echo whatsapp-mcp | sudo -S -p '' docker compose up -d` (image
+   already built; it reaches WAHA at `http://waha:3000`).
+4. **Caddy:** the `mcp.<domain>` vhost can be commented out in
+   `/etc/caddy/Caddyfile` — a now-defunct "idea-farm" tool did exactly this on
+   2026-05-30 with a `# [idea-farm: disabled …]` marker, which is what halted
+   the project. Re-enable the block, `caddy validate`, `systemctl reload caddy`.
+5. Verify: `bash scripts/test_mcp.sh` (public URL) — expect /healthz 200, /mcp
+   404, initialize 200. A local-only curl needs `-H "Host: <domain>"` or you get
+   HTTP 421 "Invalid Host header" (the allowed-hosts guard, working as designed).
+
 ## WAHA pitfalls you'll probably hit
 
 - WAHA Core's WebJS engine breaks every few WhatsApp Web updates. Symptom:
@@ -190,6 +215,22 @@ echo whatsapp-mcp | sudo -S -p '' git -C /opt/whatsapp-mcp push origin main
     fed through `whatsapp_parse_export`.
   - `get_messages` / `get_chat_media_count` docstrings already warn about
     thin results; surface it to the user instead of silently failing.
+- **NOWEB store reverts to disabled on every WAHA restart (issue #868).**
+  On the CORE tier the per-session store flag is NOT persisted across container
+  restarts. After any `docker restart`/recreate/reboot the session returns to
+  `WORKING` but with `config: null`, and EVERY store-backed call — `list_chats`,
+  `list_contacts`, AND `get_messages` (even one chat by JID) — fails HTTP 400
+  `Enable NOWEB store "config.noweb.store.enabled=True" …`. Only `check-exists`
+  is store-free. The synced data is fine on disk
+  (`/app/.sessions/noweb/default/store.sqlite3`); only the flag is lost, and the
+  `WHATSAPP_DEFAULT_ENGINE_NOWEB_STORE_*` env vars do NOT reliably re-apply.
+  Fix (no QR, no history loss) — re-PUT the session config:
+  `curl -X PUT .../api/sessions/default -d '{"config":{"noweb":{"store":{"enabled":true,"fullSync":true}}}}'`.
+  Auto-healed on the VPS by `deploy/ensure-noweb-store.sh` + systemd
+  `noweb-store-ensure.timer` (idempotent; 90 s after boot, then every 10 min).
+  Force it immediately: `sudo systemctl start noweb-store-ensure.service`.
+  To find a *person*, use `list_contacts`: NOWEB chat objects have `name: null`
+  for individuals, so `list_chats name_contains` only matches group names.
 
 ## When the user asks for a new tool
 

@@ -1,0 +1,8 @@
+[Unit]
+Description=Ensure WAHA NOWEB store stays enabled (workaround devlikeapro/waha#868)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/whatsapp-bot/deploy/ensure-noweb-store.sh
